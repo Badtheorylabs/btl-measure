@@ -4,11 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "btl-measure"
-version = "0.1.0"
+version = "0.2.0"
 description = "Independent per-item evaluation and comparison for BTL model work"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = []
+
+[project.scripts]
+btl-measure = "btl_measure.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["btl_measure*"]

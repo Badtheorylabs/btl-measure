@@ -46,6 +46,11 @@ class Evaluation:
 def _score(record: dict[str, Any]) -> float:
     values = [record.get(name) for name in ("score", "reward") if record.get(name) is not None]
     if values:
+        if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+               for value in values):
+            raise ValueError("Evaluation scores must be finite numbers")
+        if any(value != values[0] for value in values[1:]):
+            raise ValueError("Conflicting score and reward in evaluation record")
         value = values[0]
     elif isinstance(record.get("passed"), bool):
         value = float(record["passed"])
@@ -55,6 +60,9 @@ def _score(record: dict[str, Any]) -> float:
         raise ValueError("Evaluation scores must be finite numbers")
     if not 0.0 <= float(value) <= 1.0:
         raise ValueError("Evaluation scores must be between zero and one")
+    if "passed" in record:
+        if not isinstance(record["passed"], bool) or record["passed"] != (float(value) >= 1.0):
+            raise ValueError("Conflicting score and passed flag in evaluation record")
     return float(value)
 
 
@@ -71,6 +79,8 @@ def _records(document: dict[str, Any]) -> tuple[dict[str, Any], ...]:
             raise ValueError(f"Duplicate evaluation id: {raw['id']}")
         ids.add(raw["id"])
         score = _score(raw)
+        if raw.get("source_id") is not None and not isinstance(raw["source_id"], str):
+            raise ValueError("Evaluation source_id must be a string or null")
         normalized.append({"id": raw["id"], "score": score,
                            "source_id": raw.get("source_id"),
                            "metadata": raw.get("metadata", {})})
@@ -109,9 +119,11 @@ def compare(baseline: Evaluation, candidate: Evaluation, *, minimum_relative_imp
         reasons.append("Taskset revisions differ")
     if baseline.scores.keys() != candidate.scores.keys():
         reasons.append("Per-item evaluation IDs differ")
+    if {r["id"]: r["source_id"] for r in baseline.records} != {r["id"]: r["source_id"] for r in candidate.records}:
+        reasons.append("Per-item source identities differ")
     if baseline.model_id == candidate.model_id and baseline.model_revision == candidate.model_revision:
         reasons.append("Baseline and candidate model revisions are identical")
-    if isinstance(minimum_relative_improvement, bool) or not math.isfinite(minimum_relative_improvement) or minimum_relative_improvement < 0:
+    if type(minimum_relative_improvement) not in {int, float} or not math.isfinite(minimum_relative_improvement) or minimum_relative_improvement < 0:
         raise ValueError("Minimum relative improvement must be finite and nonnegative")
     common = sorted(baseline.scores.keys() & candidate.scores.keys())
     deltas = [{"id": key, "baseline": baseline.scores[key], "candidate": candidate.scores[key],
@@ -119,10 +131,10 @@ def compare(baseline: Evaluation, candidate: Evaluation, *, minimum_relative_imp
               for key in common]
     mean_delta = candidate.mean_score - baseline.mean_score if common else float("nan")
     relative = mean_delta / abs(baseline.mean_score) if common and baseline.mean_score != 0 else None
-    regressions = [key for key in common if baseline.passed[key] and not candidate.passed[key]]
-    improvements = [key for key in common if not baseline.passed[key] and candidate.passed[key]]
+    regressions = [key for key in common if candidate.scores[key] < baseline.scores[key]]
+    improvements = [key for key in common if candidate.scores[key] > baseline.scores[key]]
     comparable = not reasons and bool(common)
-    meets = comparable and relative is not None and relative >= minimum_relative_improvement
+    meets = comparable and relative is not None and relative > 0 and relative >= minimum_relative_improvement
     return {"comparable": comparable, "reasons": reasons, "baseline": validate(baseline),
             "candidate": validate(candidate), "paired_records": len(common), "deltas": deltas,
             "mean_delta": mean_delta if common else None, "relative_improvement": relative,
